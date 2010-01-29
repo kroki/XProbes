@@ -14,11 +14,32 @@ To build the project, run
 
   ./configure
   make
-  make check
+  make check  (it won't run anything, yet will check some build scenarios)
 
 To install it, run
 
   make install
 
+
+Additional options to configure:
+
+  --enable-dlerror        assume dlerror() is thread-safe [default=if found]
+  --enable-dladdr         assume dladdr() may be called from object
+                          constructor (i.e. from dlopen()) [default=if found]
+  --disable-control       do not build xprobes control utility [default=build]
+
+
 If you are doing 64-bit build, and your system keeps 64-bit libraries
 in /lib64, pass --libdir='${exec_prefix}/lib64' to ./configure above.
+You can build both library types with
+
+  ./configure --libdir='${exec_prefix}/lib64'
+  make
+  make check
+  make install
+
+  make clean
+  ./configure --disable-control CC='gcc -m32' CXX='g++ -m32'
+  make
+  make check
+  make install-exec
