@@ -239,6 +239,7 @@ pattern, and my_probe function from /path/to/my_probe.so was attached to it
 (prototype check passed).
 
   xprobes> command /path/to/my_probe.so dump
+  command in progress, waiting...
   greater_count: 16
   xprobes>
 
