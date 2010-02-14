@@ -518,12 +518,16 @@ handle_sigint(int sig)
 {
   UNUSED(sig);
 
+  int save_errno = errno;
+
   int res = _xprobes_control_write(control_socket, "cancel", sizeof("cancel"));
   if (res == 1)
     control_notify();
 
   res = sigaction(SIGINT, &ignore, NULL);
   assert(res == 0);
+
+  errno = save_errno;
 }
 
 
