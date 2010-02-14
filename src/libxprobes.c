@@ -110,8 +110,8 @@ static int signal_no;
 static pid_t control_pid = 0;
 static int control_socket = -1;
 static bool control_write_enabled = false;
-static bool last_is_newline = true;
 
+static bool need_newline = false;
 static int cancel_state;
 static struct sigaction sigpipe_orig;
 
@@ -313,9 +313,9 @@ control_write(const char *str)
 
   int res = _xprobes_control_write(control_socket, str, len);
   if (res == 1)
-    last_is_newline = (str[len - 1] == '\n');
+    need_newline = (str[len - 1] != '\n');
   else
-    last_is_newline = true;
+    need_newline = false;
 
   return res;
 }
@@ -329,16 +329,16 @@ control_done(void)
 
   const char *eom;
   size_t eom_len;
-  if (last_is_newline)
+  if (need_newline)
     {
-      eom = "\0";
-      eom_len = 1;
+      need_newline = false;
+      eom = "\n\0";
+      eom_len = 2;
     }
   else
     {
-      last_is_newline = true;
-      eom = "\n\0";
-      eom_len = 2;
+      eom = "\0";
+      eom_len = 1;
     }
 
   int res = _xprobes_control_write(control_socket, eom, eom_len);
@@ -1005,12 +1005,12 @@ action_module_command()
   while (isspace(*end))
     ++end;
 
-  if (! last_is_newline)
+  if (need_newline)
     control_write("\n");
 
   module->command(end, control_write);
 
-  if (! last_is_newline)
+  if (need_newline)
     control_write("\n");
 
  done:
