@@ -1625,7 +1625,7 @@ register_signal_handler(void)
 {
   control.my_pid = getpid();
   config.signal_no = DEFAULT_SIGNAL;
-  config.safe_unload_delay = 60;
+  config.safe_unload_delay = DEFAULT_UNLOAD_DELAY;
 
   const char *options = getenv("XPROBES_OPTIONS");
   if (options)
