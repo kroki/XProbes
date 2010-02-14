@@ -41,15 +41,17 @@ extern "C" {
         struct _xprobes_site _xprobes_site = {                          \
           /* .tag = */ #name,                                           \
           /* .proto = */ _xprobes_proto,                                \
-          /* .probe = */ &_xprobes_probe_noop,                          \
+          /* .probe = */ &_xprobes.noop,                                \
         };                                                              \
                                                                         \
-      if (__builtin_expect                                              \
-            (_xprobes_site.probe != &_xprobes_probe_noop, 0))           \
+      const struct _xprobes_probe *probe_volatile =                     \
+        _xprobes_site.probe;                                            \
+      if (__builtin_expect(probe_volatile != &_xprobes.noop, 0))        \
         {                                                               \
-          if (__builtin_expect(_xprobes_action != _xprobes_noop, 0))    \
-            _xprobes_action();                                          \
-          ((void (*) proto) _xprobes_site.probe->func) args;            \
+          void (*action_volatile)(/* any */) = _xprobes.action;         \
+          if (__builtin_expect(action_volatile != _xprobes_noop, 0))    \
+            action_volatile();                                          \
+          ((void (*) proto) probe_volatile->func) args;                 \
         }                                                               \
     }                                                                   \
   while (0)

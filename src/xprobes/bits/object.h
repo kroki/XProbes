@@ -51,6 +51,14 @@ struct _xprobes_object
 };
 
 
+struct _xprobes
+{
+  const struct _xprobes_probe noop;
+  const struct _xprobes_probe action_pending;
+  void (*action)(/* any */);
+};
+
+
 void _xprobes_object_link(struct _xprobes_object *object,
                           unsigned int object_version);
 
@@ -58,9 +66,7 @@ void _xprobes_object_unlink(struct _xprobes_object *object);
 
 void _xprobes_noop();
 
-extern struct _xprobes_probe _xprobes_probe_noop;
-
-extern void (*_xprobes_action)();
+extern struct _xprobes _xprobes;
 
 
 #endif  /* ! _XPROBES_BITS_OBJECT_H */

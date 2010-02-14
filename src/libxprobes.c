@@ -63,61 +63,81 @@
 
 
 void
-_xprobes_noop()
+_xprobes_noop(/* any */)
 {
-  /* May be called with various argument lists.  */
+  /* nothing */
 }
 
 
-struct _xprobes_probe _xprobes_probe_noop = {
-  .func = _xprobes_noop
+struct _xprobes _xprobes = {
+  .noop = { .func = _xprobes_noop },
+  .action_pending = { .func = _xprobes_noop },
+  .action = _xprobes_noop,
 };
 
-static struct _xprobes_probe probe_action_pending = {
-  .func = _xprobes_noop
+
+struct config
+{
+  int signal_no;
+  sigset_t signal_mask;
+  int safe_unload_delay;
 };
 
-typedef void (*action_type)();
-
-action_type _xprobes_action = _xprobes_noop;
+struct config config;
 
 
-static pthread_mutex_t sigmask_mutex = PTHREAD_MUTEX_INITIALIZER;
+struct control
+{
+  pthread_mutex_t mutex;
 
-static sigset_t signal_mask;
-/*
-  Initializing inside_dlop to true prevents the access to signal_mask
-  before it is initialized.
-*/
-static bool inside_dlop = true;
-static bool version_mismatch = false;
+  pid_t pid;
+  int socket;
+  pid_t my_pid;
+
+  char command_buf[1024];
+  char *command_args;
+
+  struct sigaction sigpipe_orig;
+  bool need_newline;
+
+  int save_errno;
+  int cancellation;
+
+  bool version_mismatch;
+};
+
+static struct control control = {
+  .mutex = PTHREAD_MUTEX_INITIALIZER,
+
+  .socket = -1,
+};
 
 
-static pthread_mutex_t data_mutex = PTHREAD_MUTEX_INITIALIZER;
+struct data
+{
+  pthread_mutex_t mutex;
 
-static struct _xprobes_probe *probe_noop = &_xprobes_probe_noop;
+  struct list_node object_list;
+  struct list_node module_enabled_queue;
+  struct list_node module_disabled_list;
 
-static struct list_node object_list = LIST_INIT(object_list);
+  const struct _xprobes_probe *probe_noop;
 
-static struct list_node module_enabled_queue = LIST_INIT(module_enabled_queue);
-static struct list_node module_disabled_list = LIST_INIT(module_disabled_list);
+  bool control_locked;
+};
 
-static char command_buf[1024];
-static char *command_args = NULL;
+static struct data data = {
+  .mutex = PTHREAD_MUTEX_INITIALIZER,
 
-static int safe_unload_delay = 60;
-static int signal_no;
-static pid_t control_pid = 0;
-static int control_socket = -1;
-static bool control_write_enabled = false;
+  .object_list = LIST_INIT(data.object_list),
+  .module_enabled_queue = LIST_INIT(data.module_enabled_queue),
+  .module_disabled_list = LIST_INIT(data.module_disabled_list),
 
-static bool need_newline = false;
-static int cancel_state;
-static struct sigaction sigpipe_orig;
+  .probe_noop = &_xprobes.noop,
+};
 
-static int signal_save_errno;
-static pid_t my_pid = 0;
 
+typedef void (*action_type)(/* any */);
 
 enum {
   NAME_ALLOCATED = 0x1,
@@ -149,12 +169,12 @@ ignore_sigpipe(void)
   sigpending(&pending);
   if (! sigismember(&pending, SIGPIPE))
     {
-      int res = sigaction(SIGPIPE, &ignore, &sigpipe_orig);
+      int res = sigaction(SIGPIPE, &ignore, &control.sigpipe_orig);
       assert(res == 0);
     }
   else
     {
-      sigpipe_orig.sa_handler = SIG_IGN;
+      control.sigpipe_orig.sa_handler = SIG_IGN;
     }
 #endif  /* ! defined(MSG_NOSIGNAL) && ! defined(SO_NOSIGPIPE) */
 }
@@ -165,9 +185,9 @@ void
 restore_sigpipe(void)
 {
 #if ! defined(MSG_NOSIGNAL) && ! defined(SO_NOSIGPIPE)
-  if (sigpipe_orig.sa_handler != SIG_IGN)
+  if (control.sigpipe_orig.sa_handler != SIG_IGN)
     {
-      int res = sigaction(SIGPIPE, &sigpipe_orig, NULL);
+      int res = sigaction(SIGPIPE, &control.sigpipe_orig, NULL);
       assert(res == 0);
     }
 #endif  /* ! defined(MSG_NOSIGNAL) && ! defined(SO_NOSIGPIPE) */
@@ -176,89 +196,59 @@ restore_sigpipe(void)
 
 static inline
 void
-lock_signal(void)
+lock_data(void)
 {
-  int res = pthread_mutex_lock(&data_mutex);
+  int res = pthread_mutex_lock(&data.mutex);
+  assert(res == 0);
+}
+
+
+static inline
+void
+unlock_data(void)
+{
+  int res = pthread_mutex_unlock(&data.mutex);
+  assert(res == 0);
+}
+
+
+static inline
+void
+lock_control(void)
+{
+  int res = pthread_mutex_lock(&control.mutex);
   assert(res == 0);
 
-  res = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
+  control.save_errno = errno;
+
+  res = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &control.cancellation);
   assert(res == 0);
-
-  control_write_enabled = true;
-
-  signal_save_errno = errno;
 
   ignore_sigpipe();
+
+  lock_data();
+
+  data.control_locked = true;
 }
 
 
 static inline
 void
-unlock_signal(void)
+unlock_control(void)
 {
+  data.control_locked = false;
+
+  unlock_data();
+
   restore_sigpipe();
 
-  errno = signal_save_errno;
-
-  control_write_enabled = false;
-
-  if (cancel_state != PTHREAD_CANCEL_DISABLE)
-    {
-      int dummy;
-      int res = pthread_setcancelstate(cancel_state, &dummy);
-      assert(res == 0);
-    }
-
-  int res = pthread_mutex_unlock(&data_mutex);
-  assert(res == 0);
-}
-
-
-static inline
-void
-lock(void)
-{
-  /*
-    To avoid recursive call to pthread_mutex_lock(&data_mutex) that
-    may happen from the signal handler, we have to block the signal
-    _before_ the call.  Additionally, we have to order calls to
-    pthread_sigmask() to avoid the race, hence the second
-    sigmask_mutex.
-  */
-  int res = pthread_mutex_lock(&sigmask_mutex);
+  int doesnt_allow_null;
+  int res = pthread_setcancelstate(control.cancellation, &doesnt_allow_null);
   assert(res == 0);
 
-  /*
-    If inside_dlop is set, then the signal is blocked already by
-    lock_action().  See comment in action_load().  Or it may mean that
-    we haven't initialized signal_mask yet (constructor of some object
-    blessed with xprobes is called before our own constructor).
-  */
-  if (! inside_dlop)
-    {
-      res = pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
-      assert(res == 0);
-    }
+  errno = control.save_errno;
 
-  res = pthread_mutex_lock(&data_mutex);
-  assert(res == 0);
-}
-
-
-static inline
-void
-unlock(void)
-{
-  int res = pthread_mutex_unlock(&data_mutex);
-  assert(res == 0);
-
-  if (! inside_dlop)
-    {
-      res = pthread_sigmask(SIG_UNBLOCK, &signal_mask, NULL);
-      assert(res == 0);
-    }
-
-  res = pthread_mutex_unlock(&sigmask_mutex);
+  res = pthread_mutex_unlock(&control.mutex);
   assert(res == 0);
 }
 
@@ -267,14 +257,14 @@ static inline
 void
 lock_action(void)
 {
-  lock();
-
-  int res = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
+  /*
+    To prevent recursive call to lock_control() from singal handler,
+    we have to block the signal int this thread first.
+  */
+  int res = pthread_sigmask(SIG_BLOCK, &config.signal_mask, NULL);
   assert(res == 0);
 
-  control_write_enabled = true;
-
-  ignore_sigpipe();
+  lock_control();
 }
 
 
@@ -282,18 +272,10 @@ static inline
 void
 unlock_action(void)
 {
-  restore_sigpipe();
+  unlock_control();
 
-  control_write_enabled = false;
-
-  if (cancel_state != PTHREAD_CANCEL_DISABLE)
-    {
-      int dummy;
-      int res = pthread_setcancelstate(cancel_state, &dummy);
-      assert(res == 0);
-    }
-
-  unlock();
+  int res = pthread_sigmask(SIG_UNBLOCK, &config.signal_mask, NULL);
+  assert(res == 0);
 }
 
 
@@ -301,7 +283,7 @@ static inline
 int
 control_write(const char *str)
 {
-  if (! control_write_enabled)
+  if (! data.control_locked)
     return -1;
 
   if (! str)
@@ -311,11 +293,11 @@ control_write(const char *str)
   if (len == 0)
     return 1;
 
-  int res = _xprobes_control_write(control_socket, str, len);
+  int res = _xprobes_control_write(control.socket, str, len);
   if (res == 1)
-    need_newline = (str[len - 1] != '\n');
+    control.need_newline = (str[len - 1] != '\n');
   else
-    need_newline = false;
+    control.need_newline = false;
 
   return res;
 }
@@ -325,13 +307,13 @@ static
 void
 control_done(void)
 {
-  command_args = NULL;
+  control.command_args = NULL;
 
   const char *eom;
   size_t eom_len;
-  if (need_newline)
+  if (control.need_newline)
     {
-      need_newline = false;
+      control.need_newline = false;
       eom = "\n\0";
       eom_len = 2;
     }
@@ -341,12 +323,12 @@ control_done(void)
       eom_len = 1;
     }
 
-  int res = _xprobes_control_write(control_socket, eom, eom_len);
+  int res = _xprobes_control_write(control.socket, eom, eom_len);
   if (res <= 0)
     {
-      RESTART(close(control_socket));
-      control_socket = -1;
-      control_pid = 0;
+      RESTART(close(control.socket));
+      control.socket = -1;
+      control.pid = 0;
     }
 }
 
@@ -355,19 +337,19 @@ static
 void
 schedule_action(action_type action)
 {
-  assert(_xprobes_action == _xprobes_noop);
-  assert(probe_noop == &_xprobes_probe_noop);
-  assert(command_args != NULL);
+  assert(_xprobes.action == _xprobes_noop);
+  assert(data.probe_noop == &_xprobes.noop);
+  assert(control.command_args != NULL);
 
-  for (struct _xprobes_object *list_each(o, &object_list, next))
+  for (struct _xprobes_object *list_each(o, &data.object_list, next))
     for (struct _xprobes_site *s = o->start; s != o->stop; ++s)
-      if (s->probe == &_xprobes_probe_noop)
-        s->probe = &probe_action_pending;
+      if (s->probe == &_xprobes.noop)
+        s->probe = &_xprobes.action_pending;
 
   control_write("command in progress, waiting...\n");
 
-  _xprobes_action = action;
-  probe_noop = &probe_action_pending;
+  _xprobes.action = action;
+  data.probe_noop = &_xprobes.action_pending;
 }
 
 
@@ -375,15 +357,15 @@ static
 void
 reset_action_pending(void)
 {
-  assert(_xprobes_action == _xprobes_noop);
-  assert(probe_noop == &probe_action_pending);
+  assert(_xprobes.action == _xprobes_noop);
+  assert(data.probe_noop == &_xprobes.action_pending);
 
-  probe_noop = &_xprobes_probe_noop;
+  data.probe_noop = &_xprobes.noop;
 
-  for (struct _xprobes_object *list_each(o, &object_list, next))
+  for (struct _xprobes_object *list_each(o, &data.object_list, next))
     for (struct _xprobes_site *s = o->start; s != o->stop; ++s)
-      if (s->probe == &probe_action_pending)
-        s->probe = &_xprobes_probe_noop;
+      if (s->probe == &_xprobes.action_pending)
+        s->probe = &_xprobes.noop;
 }
 
 
@@ -427,7 +409,7 @@ site_attach_module(struct _xprobes_object *object,
               return -1;
             }
 
-          if (site->probe != probe_noop)
+          if (site->probe != data.probe_noop)
             {
               assert(! attach);
 
@@ -472,7 +454,7 @@ module_enable(struct _xprobes_module *module)
 {
   module->flags &= ~ERRORS;
 
-  for (struct _xprobes_object *list_each(o, &object_list, next))
+  for (struct _xprobes_object *list_each(o, &data.object_list, next))
     for (struct _xprobes_site *s = o->start; s != o->stop; ++s)
       if (site_attach_module(o, s, module, false) == -1)
         {
@@ -480,16 +462,16 @@ module_enable(struct _xprobes_module *module)
             We don't have to update safe_unload_timestamp, because the
             module wasn't enabled before the call.
           */
-          list_insert(&module_disabled_list, &module->next);
+          list_insert(&data.module_disabled_list, &module->next);
 
           control_write("module is not enabled\n");
 
           return;
         }
 
-  list_insert_first(&module_enabled_queue, &module->next);
+  list_insert_first(&data.module_enabled_queue, &module->next);
 
-  for (struct _xprobes_object *list_each(o, &object_list, next))
+  for (struct _xprobes_object *list_each(o, &data.object_list, next))
     for (struct _xprobes_site *s = o->start; s != o->stop; ++s)
       site_attach_module(o, s, module, true);
 }
@@ -500,22 +482,22 @@ void
 module_disable(struct _xprobes_module *module)
 {
   if (module->flags & ERRORS)
-    list_insert(&module_disabled_list, &module->next);
+    list_insert(&data.module_disabled_list, &module->next);
   else
-    list_insert_first(&module_disabled_list, &module->next);
+    list_insert_first(&data.module_disabled_list, &module->next);
 
   if (module->flags & MANAGED)
     {
-      int delay = (module->unload_delay > safe_unload_delay
+      int delay = (module->unload_delay > config.safe_unload_delay
                    ? module->unload_delay
-                   : safe_unload_delay);
+                   : config.safe_unload_delay);
       module->safe_unload_timestamp = time(0) + delay;
     }
 
-  for (struct _xprobes_object *list_each(o, &object_list, next))
+  for (struct _xprobes_object *list_each(o, &data.object_list, next))
     for (struct _xprobes_site *s = o->start; s != o->stop; ++s)
       if (s->probe->module == module)
-        s->probe = probe_noop;
+        s->probe = data.probe_noop;
 }
 
 
@@ -619,7 +601,7 @@ void
 _xprobes_module_link(struct _xprobes_module *module,
                      unsigned int module_version)
 {
-  lock();
+  lock_data();
 
   if (module_version != _XPROBES_MODULE_VERSION)
     {
@@ -631,9 +613,9 @@ _xprobes_module_link(struct _xprobes_module *module,
         attach later, see that the module is not listed, try to load
         it, and see the error message then.
       */
-      if (inside_dlop)
+      if (data.control_locked)
         {
-          version_mismatch = true;
+          control.version_mismatch = true;
 
           char version[11];
           uitoa(version, module_version);
@@ -643,7 +625,7 @@ _xprobes_module_link(struct _xprobes_module *module,
           control_write(" not supported\n");
         }
 
-      unlock();
+      unlock_data();
 
       return;
     }
@@ -651,15 +633,15 @@ _xprobes_module_link(struct _xprobes_module *module,
   module->handle = NULL;
   module->flags = 0;
 
-  if (inside_dlop)
+  if (data.control_locked)
     module->flags |= MANAGED;
 
   module->name = (char *) addr2name(module);
   if (! module->name)
     {
       module->flags |= NAME_ALLOCATED;
-      if (inside_dlop)
-        module->name = strdup(command_args);
+      if (data.control_locked)
+        module->name = strdup(control.command_args);
       else
         module->name = get_name(module);
     }
@@ -672,21 +654,21 @@ _xprobes_module_link(struct _xprobes_module *module,
 
   module_enable(module);
 
-  unlock();
+  unlock_data();
 }
 
 
 void
 _xprobes_module_unlink(struct _xprobes_module *module)
 {
-  lock();
+  lock_data();
 
   list_remove(&module->next);
 
   if (module->flags & NAME_ALLOCATED)
     free(module->name);
 
-  unlock();
+  unlock_data();
 }
 
 
@@ -704,7 +686,9 @@ _xprobes_object_link(struct _xprobes_object *object,
       return;
     }
 
-  lock();
+  lock_data();
+  bool save_control_locked = data.control_locked;
+  data.control_locked = false;
 
   object->flags = 0;
 
@@ -718,7 +702,7 @@ _xprobes_object_link(struct _xprobes_object *object,
   for (struct _xprobes_site *s = object->start; s != object->stop; ++s)
     {
       compress_proto(s->proto);
-      s->probe = probe_noop;
+      s->probe = data.probe_noop;
     }
 
   /*
@@ -726,7 +710,8 @@ _xprobes_object_link(struct _xprobes_object *object,
     once, attaching the _first_ matching probe.
   */
   for (struct _xprobes_site *s = object->start; s != object->stop; ++s)
-    for (struct _xprobes_module *list_each(m, &module_enabled_queue, next))
+    for (struct _xprobes_module *
+           list_each(m, &data.module_enabled_queue, next))
       {
         int res = site_attach_module(object, s, m, false);
         if (res == -1)
@@ -745,28 +730,33 @@ _xprobes_object_link(struct _xprobes_object *object,
           }
       }
 
-  list_insert(&object_list, &object->next);
+  list_insert(&data.object_list, &object->next);
 
   for (struct _xprobes_site *s = object->start; s != object->stop; ++s)
-    for (struct _xprobes_module *list_each(m, &module_enabled_queue, next))
+    for (struct _xprobes_module *
+           list_each(m, &data.module_enabled_queue, next))
       if (site_attach_module(object, s, m, true) == 1)
         break;
 
-  unlock();
+  data.control_locked = save_control_locked;
+  unlock_data();
 }
 
 
 void
 _xprobes_object_unlink(struct _xprobes_object *object)
 {
-  lock();
+  lock_data();
+  bool save_control_locked = data.control_locked;
+  data.control_locked = false;
 
   if (object->flags & NAME_ALLOCATED)
     free(object->name);
 
   list_remove(&object->next);
 
-  unlock();
+  data.control_locked = save_control_locked;
+  unlock_data();
 }
 
 
@@ -774,8 +764,7 @@ static
 int
 close_handle(void *handle)
 {
-  inside_dlop = true;
-  unlock();
+  unlock_data();
 
   int res = dlclose(handle);
   if (res != 0)
@@ -787,8 +776,7 @@ close_handle(void *handle)
       error = "failed";
 #endif
 
-      lock();
-      inside_dlop = false;
+      lock_data();
 
       control_write("dlclose(): ");
       control_write(error);
@@ -797,8 +785,7 @@ close_handle(void *handle)
       return res;
     }
 
-  lock();
-  inside_dlop = false;
+  lock_data();
 
   return 0;
 }
@@ -806,15 +793,15 @@ close_handle(void *handle)
 
 static
 void
-action_load()
+action_load(/* any */)
 {
-  if (! __sync_bool_compare_and_swap(&_xprobes_action,
+  if (! __sync_bool_compare_and_swap(&_xprobes.action,
                                      action_load, _xprobes_noop))
     return;
 
   lock_action();
 
-  if (probe_noop != &probe_action_pending)
+  if (data.probe_noop != &_xprobes.action_pending)
     goto error;                 /* Action was cancelled. */
 
   reset_action_pending();
@@ -826,18 +813,16 @@ action_load()
     blocked in _xprobes_object_link() now, because we are holding the
     mutex.  Since dlopen() family is thread-safe (except for
     dlerror(), which we use conditionally), it may use its own mutex.
-    If we call dlopen() right away we will block on that mutex,
+    If we call dlopen() right away we might block on that mutex,
     waiting for the thread that waits for us.  Thus to avoid the
-    deadlock we release the mutex.  But we do this with unlock() (not
-    unlock_action()), setting inside_dlop to true, to prevent
-    premature signal unblocking and cancellation enabling.  This
-    guarantees that no other command will be executed concurrently,
-    and we won't be canceled in the middle.
+    deadlock we release the mutex.  But we do this with unlock_data(),
+    not unlock_action(), thus releasing only data.mutex.
+    control.mutex remains locked, and we do not unblock the signal nor
+    restore thread cancellation, so no command can start concurrently.
   */
-  inside_dlop = true;
-  unlock();
+  unlock_data();
 
-  void *handle = dlopen(command_args, RTLD_NOW | RTLD_LOCAL);
+  void *handle = dlopen(control.command_args, RTLD_NOW | RTLD_LOCAL);
   if (! handle)
     {
       const char *error;
@@ -847,8 +832,7 @@ action_load()
       error = "failed";
 #endif
 
-      lock();
-      inside_dlop = false;
+      lock_data();
 
       control_write("dlopen(): ");
       control_write(error);
@@ -872,8 +856,7 @@ action_load()
       error = "failed (probably symbol " USCORE "xprobes_module not found)";
 #endif
 
-      lock();
-      inside_dlop = false;
+      lock_data();
 
       control_write("dlsym(): ");
       control_write(error);
@@ -885,12 +868,11 @@ action_load()
       goto error;
     }
 
-  lock();
-  inside_dlop = false;
+  lock_data();
 
-  if (version_mismatch)
+  if (control.version_mismatch)
     {
-      version_mismatch = false;
+      control.version_mismatch = false;
 
       if (close_handle(handle) == 0)
         control_write("not loaded");
@@ -942,21 +924,21 @@ action_load()
 
 static
 void
-action_unload()
+action_unload(/* any */)
 {
-  if (! __sync_bool_compare_and_swap(&_xprobes_action,
+  if (! __sync_bool_compare_and_swap(&_xprobes.action,
                                      action_unload, _xprobes_noop))
     return;
 
   lock_action();
 
-  if (probe_noop != &probe_action_pending)
+  if (data.probe_noop != &_xprobes.action_pending)
     goto done;                  /* Action was cancelled. */
 
   reset_action_pending();
 
   struct _xprobes_module *module =
-    find_module(&module_disabled_list, command_args);
+    find_module(&data.module_disabled_list, control.command_args);
   assert(module);
 
   if (close_handle(module->handle) == 0)
@@ -970,21 +952,21 @@ action_unload()
 
 static
 void
-action_module_command()
+action_module_command(/* any */)
 {
-  if (! __sync_bool_compare_and_swap(&_xprobes_action,
+  if (! __sync_bool_compare_and_swap(&_xprobes.action,
                                      action_module_command, _xprobes_noop))
     return;
 
   lock_action();
 
-  if (probe_noop != &probe_action_pending)
+  if (data.probe_noop != &_xprobes.action_pending)
     goto done;                  /* Action was cancelled. */
 
   reset_action_pending();
 
-  size_t len = strlen(command_args);
-  char *end = command_args;
+  size_t len = strlen(control.command_args);
+  char *end = control.command_args;
   assert(! isspace(*end));
   while (*end && ! isspace(*end))
     {
@@ -994,9 +976,9 @@ action_module_command()
   *end = '\0';
 
   struct _xprobes_module *module =
-    find_module(&module_enabled_queue, command_args);
+    find_module(&data.module_enabled_queue, control.command_args);
   if (! module)
-    module = find_module(&module_disabled_list, command_args);
+    module = find_module(&data.module_disabled_list, control.command_args);
   assert(module);
   assert(module->command);
 
@@ -1005,12 +987,12 @@ action_module_command()
   while (isspace(*end))
     ++end;
 
-  if (need_newline)
+  if (control.need_newline)
     control_write("\n");
 
   module->command(end, control_write);
 
-  if (need_newline)
+  if (control.need_newline)
     control_write("\n");
 
  done:
@@ -1023,15 +1005,15 @@ static
 bool
 command_cancel(void)
 {
-  if (probe_noop != &probe_action_pending)
+  if (data.probe_noop != &_xprobes.action_pending)
     return true;                /* No action is pending. */
 
   control_write("command canceled");
 
-  action_type action = _xprobes_action;
+  action_type action = _xprobes.action;
   bool action_token_acquired =
     (action != _xprobes_noop
-     && __sync_bool_compare_and_swap(&_xprobes_action,
+     && __sync_bool_compare_and_swap(&_xprobes.action,
                                      action, _xprobes_noop));
 
   reset_action_pending();
@@ -1063,9 +1045,9 @@ bool
 command_load(void)
 {
   struct _xprobes_module *module =
-    find_module(&module_enabled_queue, command_args);
+    find_module(&data.module_enabled_queue, control.command_args);
   if (! module)
-    module = find_module(&module_disabled_list, command_args);
+    module = find_module(&data.module_disabled_list, control.command_args);
   if (module)
     {
       if (module->flags & MANAGED)
@@ -1087,7 +1069,7 @@ bool
 command_enable(void)
 {
   struct _xprobes_module *module =
-    find_module(&module_disabled_list, command_args);
+    find_module(&data.module_disabled_list, control.command_args);
   if (module)
     {
       list_remove(&module->next);
@@ -1095,7 +1077,7 @@ command_enable(void)
     }
   else
     {
-      if (find_module(&module_enabled_queue, command_args))
+      if (find_module(&data.module_enabled_queue, control.command_args))
         control_write("already enabled");
       else
         control_write("not found");
@@ -1110,7 +1092,7 @@ bool
 command_disable(void)
 {
   struct _xprobes_module *module =
-    find_module(&module_enabled_queue, command_args);
+    find_module(&data.module_enabled_queue, control.command_args);
   if (module)
     {
       list_remove(&module->next);
@@ -1118,7 +1100,7 @@ command_disable(void)
     }
   else
     {
-      if (find_module(&module_disabled_list, command_args))
+      if (find_module(&data.module_disabled_list, control.command_args))
         control_write("already disabled");
       else
         control_write("not found");
@@ -1133,10 +1115,10 @@ bool
 command_unload(void)
 {
   struct _xprobes_module *module =
-    find_module(&module_disabled_list, command_args);
+    find_module(&data.module_disabled_list, control.command_args);
   if (! module)
     {
-      module = find_module(&module_enabled_queue, command_args);
+      module = find_module(&data.module_enabled_queue, control.command_args);
       if (! module)
         {
           control_write("not loaded");
@@ -1182,7 +1164,7 @@ static
 bool
 command_command(void)
 {
-  char *end = command_args;
+  char *end = control.command_args;
   assert(! isspace(*end));
   while (*end && ! isspace(*end))
     ++end;
@@ -1191,9 +1173,9 @@ command_command(void)
   *end = '\0';
 
   struct _xprobes_module *module =
-    find_module(&module_enabled_queue, command_args);
+    find_module(&data.module_enabled_queue, control.command_args);
   if (! module)
-    module = find_module(&module_disabled_list, command_args);
+    module = find_module(&data.module_disabled_list, control.command_args);
   if (! module)
     {
       control_write("module not found");
@@ -1239,7 +1221,7 @@ static
 bool
 command_objects(void)
 {
-  for (struct _xprobes_object *list_each(o, &object_list, next))
+  for (struct _xprobes_object *list_each(o, &data.object_list, next))
     {
       control_write("  ");
       control_write(o->name);
@@ -1254,19 +1236,19 @@ static
 bool
 command_sites(void)
 {
-  for (struct _xprobes_object *list_each(o, &object_list, next))
+  for (struct _xprobes_object *list_each(o, &data.object_list, next))
     {
       control_write(o->name);
       control_write(":\n");
       for (struct _xprobes_site *s = o->start; s != o->stop; ++s)
         {
-          if (s->probe != probe_noop)
+          if (s->probe != data.probe_noop)
             control_write("* ");
           else
             control_write("  ");
           control_write(s->tag);
           control_write(s->proto);
-          if (s->probe != probe_noop)
+          if (s->probe != data.probe_noop)
             {
               control_write(" => ");
               control_write(s->probe->pattern);
@@ -1291,7 +1273,7 @@ static
 bool
 command_modules(void)
 {
-  for (struct _xprobes_module *list_each(m, &module_enabled_queue, next))
+  for (struct _xprobes_module *list_each(m, &data.module_enabled_queue, next))
     {
       control_write("* ");
       control_write(m->name);
@@ -1302,7 +1284,7 @@ command_modules(void)
     }
 
   time_t now = time(0);
-  for (struct _xprobes_module *list_each(m, &module_disabled_list, next))
+  for (struct _xprobes_module *list_each(m, &data.module_disabled_list, next))
     {
       if (m->flags & PROTO_MISMATCH)
         control_write("P ");
@@ -1361,10 +1343,10 @@ static
 bool
 command_probes(void)
 {
-  for (struct _xprobes_module *list_each(m, &module_enabled_queue, next))
+  for (struct _xprobes_module *list_each(m, &data.module_enabled_queue, next))
     list_probes(m);
 
-  for (struct _xprobes_module *list_each(m, &module_disabled_list, next))
+  for (struct _xprobes_module *list_each(m, &data.module_disabled_list, next))
     list_probes(m);
 
   return true;
@@ -1436,7 +1418,7 @@ process_command(char *cmd)
         && (commands[i].cmd[end - cmd] == ' '
             || commands[i].cmd[end - cmd] == '\0'))
       {
-        if (! commands[i].async && probe_noop == &probe_action_pending)
+        if (! commands[i].async && data.probe_noop == &_xprobes.action_pending)
           {
             control_write("command in progress, waiting...\n");
 
@@ -1447,7 +1429,7 @@ process_command(char *cmd)
           ++end;
         while (isspace(*end))
           ++end;
-        command_args = end;
+        control.command_args = end;
 
         return commands[i].run();
       }
@@ -1463,7 +1445,7 @@ bool
 control_is_alive(void)
 {
   /*
-    We can't use kill(control_pid, 0), because we may lack the
+    We can't use kill(control.pid, 0), because we may lack the
     permissions to send the signals to control process.
   */
   static const char isalive[] = { ISALIVE_CHAR, '\0' };
@@ -1482,28 +1464,28 @@ signal_handler(int sig, siginfo_t *info, void *ctx)
   if (info->si_code != SI_QUEUE)
     return;
 
-  lock_signal();
+  lock_control();
 
   /* Check if we had fork()ed.  */
   pid_t current_pid = getpid();
-  if (__builtin_expect(my_pid != current_pid, 0))
+  if (__builtin_expect(control.my_pid != current_pid, 0))
     {
-      if (control_pid)
+      if (control.pid)
         {
-          RESTART(close(control_socket));
-          control_socket = -1;
-          control_pid = 0;
+          RESTART(close(control.socket));
+          control.socket = -1;
+          control.pid = 0;
         }
-      my_pid = current_pid;
+      control.my_pid = current_pid;
     }
 
-  if (__builtin_expect(control_pid && control_pid != info->si_pid, 0))
+  if (__builtin_expect(control.pid && control.pid != info->si_pid, 0))
     {
       if (control_is_alive())
         {
           char buf[64];
           int res = snprintf(buf, sizeof(buf),
-                             "already connected, pid %d\n", (int) control_pid);
+                             "already connected, pid %d\n", (int) control.pid);
           if (res < 0 || res >= (int) sizeof(buf))
             goto error;
 
@@ -1518,13 +1500,13 @@ signal_handler(int sig, siginfo_t *info, void *ctx)
         }
       else
         {
-          RESTART(close(control_socket));
-          control_socket = -1;
-          control_pid = 0;
+          RESTART(close(control.socket));
+          control.socket = -1;
+          control.pid = 0;
         }
     }
 
-  if (__builtin_expect(! control_pid, 0))
+  if (__builtin_expect(! control.pid, 0))
     {
       /*
         Cancel any pending command that could be left by another
@@ -1533,11 +1515,11 @@ signal_handler(int sig, siginfo_t *info, void *ctx)
       */
       bool have_to_wait = ! command_cancel();
 
-      control_socket = _xprobes_open_socket(info->si_uid, info->si_pid, false);
-      if (control_socket == -1)
+      control.socket = _xprobes_open_socket(info->si_uid, info->si_pid, false);
+      if (control.socket == -1)
         goto error;
 
-      control_pid = info->si_pid;
+      control.pid = info->si_pid;
 
       if (have_to_wait)
         goto error;
@@ -1545,17 +1527,17 @@ signal_handler(int sig, siginfo_t *info, void *ctx)
         goto done;
     }
 
-  char *pos = command_buf;
-  size_t room = sizeof(command_buf);
+  char *pos = control.command_buf;
+  size_t room = sizeof(control.command_buf);
   while (room > 0)
     {
-      ssize_t len = RESTART(read(control_socket, pos, room));
+      ssize_t len = RESTART(read(control.socket, pos, room));
       if (len <= 0)
         {
           control_write("read() error");
-          RESTART(close(control_socket));
-          control_socket = -1;
-          control_pid = 0;
+          RESTART(close(control.socket));
+          control.socket = -1;
+          control.pid = 0;
 
           goto error;
         }
@@ -1568,14 +1550,14 @@ signal_handler(int sig, siginfo_t *info, void *ctx)
   if (room == 0)
     {
       control_write("command too long");
-      RESTART(close(control_socket));
-      control_socket = -1;
-      control_pid = 0;
+      RESTART(close(control.socket));
+      control.socket = -1;
+      control.pid = 0;
 
       goto error;
     }
 
-  char *cmd = command_buf;
+  char *cmd = control.command_buf;
   while (isspace(*cmd))
     ++cmd;
 
@@ -1586,7 +1568,7 @@ signal_handler(int sig, siginfo_t *info, void *ctx)
   control_done();
 
  error:
-  unlock_signal();
+  unlock_control();
 }
 
 
@@ -1610,7 +1592,7 @@ process_options(const char *options)
                 fprintf(stderr, "xprobes: invalid signal number '%s'\n", val);
                 abort();
               }
-            signal_no = res;
+            config.signal_no = res;
           }
           break;
 
@@ -1623,7 +1605,7 @@ process_options(const char *options)
                 fprintf(stderr, "xprobes: invalid time value '%s'\n", val);
                 abort();
               }
-            safe_unload_delay = res;
+            config.safe_unload_delay = res;
           }
           break;
 
@@ -1641,23 +1623,16 @@ static __attribute__((__constructor__))
 void
 register_signal_handler(void)
 {
-  int res = pthread_mutex_lock(&sigmask_mutex);
-  assert(res == 0);
-
-  my_pid = getpid();
-  signal_no = DEFAULT_SIGNAL;
+  control.my_pid = getpid();
+  config.signal_no = DEFAULT_SIGNAL;
+  config.safe_unload_delay = 60;
 
   const char *options = getenv("XPROBES_OPTIONS");
   if (options)
     process_options(options);
 
-  sigemptyset(&signal_mask);
-  sigaddset(&signal_mask, signal_no);
-  /* Allow access to signal_mask.  */
-  inside_dlop = false;
-
-  res = pthread_mutex_unlock(&sigmask_mutex);
-  assert(res == 0);
+  sigemptyset(&config.signal_mask);
+  sigaddset(&config.signal_mask, config.signal_no);
 
   sigset_t empty;
   sigemptyset(&empty);
@@ -1666,7 +1641,7 @@ register_signal_handler(void)
     .sa_flags = SA_SIGINFO | SA_RESTART,
     .sa_mask = empty,
   };
-  res = sigaction(signal_no, &action, NULL);
+  int res = sigaction(config.signal_no, &action, NULL);
   if (res != 0)
     {
       perror("xprobes");
@@ -1679,8 +1654,6 @@ static __attribute__((__destructor__))
 void
 unregister_signal_handler(void)
 {
-  control_write_enabled = false;
-
   static const struct sigaction action = { .sa_handler = SIG_DFL };
-  sigaction(signal_no, &action, NULL);
+  sigaction(config.signal_no, &action, NULL);
 }
