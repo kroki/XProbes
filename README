@@ -19,7 +19,9 @@ Among XProbes features are:
      On probe module side two macros are used in a pair.
 
      Probes can be written in the same language as the application
-     itself (we mean C and C++ here).
+     itself (we mean C and C++ here).  This means that probe code can
+     access type definitions of the application code, and thus access
+     structures, classes, and their methods, etc. in a natural way.
 
      xprobes control utility has a nice context aware command
      completion.
@@ -127,7 +129,7 @@ define probe sites with XPROBES_SITE(tag, proto, args) macro.
     ...
   }
 
-Link you application with -lxprobes.  That it.
+Link you application with -lxprobes.  That's all.
 
 Now suppose you want to attach a probe to that site.  First you have
 to write one:
@@ -227,7 +229,7 @@ cancel command in progress by pressing C-c.
 
 Loaded modules are automatically enabled.  An asterisk before the
 module name indicates that the module is enabled.  Let's see what
-sites has attached to it:
+sites have attached to it:
 
   xprobes> sites
   /path/to/my_app:
