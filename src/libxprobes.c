@@ -1221,12 +1221,16 @@ static
 bool
 command_objects(void)
 {
+  const char *object_pattern =
+    control.command_args[0] ? control.command_args : NULL;
+
   for (struct _xprobes_object *list_each(o, &data.object_list, next))
-    {
-      control_write("  ");
-      control_write(o->name);
-      control_write("\n");
-    }
+    if (! object_pattern || fnmatch(object_pattern, o->name, 0) == 0)
+      {
+        control_write("  ");
+        control_write(o->name);
+        control_write("\n");
+      }
 
   return true;
 }
@@ -1236,12 +1240,35 @@ static
 bool
 command_sites(void)
 {
+  const char *site_pattern = NULL;
+  char *delim = strchr(control.command_args, ':');
+  if (delim)
+    {
+      *delim++ = '\0';
+      if (*delim)
+        site_pattern = delim;
+    }
+  const char *object_pattern =
+    control.command_args[0] ? control.command_args : NULL;
+
   for (struct _xprobes_object *list_each(o, &data.object_list, next))
     {
-      control_write(o->name);
-      control_write(":\n");
+      if (object_pattern && fnmatch(object_pattern, o->name, 0) != 0)
+        continue;
+
+      bool header = true;
       for (struct _xprobes_site *s = o->start; s != o->stop; ++s)
         {
+          if (site_pattern && fnmatch(site_pattern, s->tag, 0) != 0)
+            continue;
+
+          if (header)
+            {
+              header = false;
+              control_write(o->name);
+              control_write(":\n");
+            }
+
           if (s->probe != data.probe_noop)
             control_write("* ");
           else
@@ -1273,47 +1300,52 @@ static
 bool
 command_modules(void)
 {
+  const char *module_pattern =
+    control.command_args[0] ? control.command_args : NULL;
+
   for (struct _xprobes_module *list_each(m, &data.module_enabled_queue, next))
-    {
-      control_write("* ");
-      control_write(m->name);
-      if (m->flags & MANAGED)
-        control_write("\n");
-      else
-        control_write(" (preloaded)\n");
-    }
+    if (! module_pattern || fnmatch(module_pattern, m->name, 0) == 0)
+      {
+        control_write("* ");
+        control_write(m->name);
+        if (m->flags & MANAGED)
+          control_write("\n");
+        else
+          control_write(" (preloaded)\n");
+      }
 
   time_t now = time(0);
   for (struct _xprobes_module *list_each(m, &data.module_disabled_list, next))
-    {
-      if (m->flags & PROTO_MISMATCH)
-        control_write("P ");
-      else if (m->flags & PROBE_OVERRIDE)
-        control_write("O ");
-      else
-        control_write("  ");
-      control_write(m->name);
-      if (m->flags & MANAGED)
-        {
-          if (now >= m->safe_unload_timestamp)
-            {
-              control_write("\n");
-            }
-          else
-            {
-              char seconds[11];
-              uitoa(seconds, m->safe_unload_timestamp - now);
+    if (! module_pattern || fnmatch(module_pattern, m->name, 0) == 0)
+      {
+        if (m->flags & PROTO_MISMATCH)
+          control_write("P ");
+        else if (m->flags & PROBE_OVERRIDE)
+          control_write("O ");
+        else
+          control_write("  ");
+        control_write(m->name);
+        if (m->flags & MANAGED)
+          {
+            if (now >= m->safe_unload_timestamp)
+              {
+                control_write("\n");
+              }
+            else
+              {
+                char seconds[11];
+                uitoa(seconds, m->safe_unload_timestamp - now);
 
-              control_write(" (may be unloaded in ");
-              control_write(seconds);
-              control_write(" secs)\n");
-            }
-        }
-      else
-        {
-          control_write(" (preloaded)\n");
-        }
-    }
+                control_write(" (may be unloaded in ");
+                control_write(seconds);
+                control_write(" secs)\n");
+              }
+          }
+        else
+          {
+            control_write(" (preloaded)\n");
+          }
+      }
 
   return true;
 }
@@ -1321,13 +1353,22 @@ command_modules(void)
 
 static
 void
-list_probes(struct _xprobes_module *module)
+list_probes(struct _xprobes_module *module, const char *pattern)
 {
-  control_write(module->name);
-  control_write(":\n");
+  bool header = true;
   for (size_t i = 0; i < module->probe_count; ++i)
     {
       const struct _xprobes_probe *p = &module->probes[i];
+      if (pattern && fnmatch(pattern, p->pattern, 0) != 0)
+        continue;
+
+      if (header)
+        {
+          header = false;
+          control_write(module->name);
+          control_write(":\n");
+        }
+
       control_write("  ");
       control_write(p->pattern);
       control_write(" ");
@@ -1343,11 +1384,24 @@ static
 bool
 command_probes(void)
 {
+  const char *probe_pattern = NULL;
+  char *delim = strchr(control.command_args, ':');
+  if (delim)
+    {
+      *delim++ = '\0';
+      if (*delim)
+        probe_pattern = delim;
+    }
+  const char *module_pattern =
+    control.command_args[0] ? control.command_args : NULL;
+
   for (struct _xprobes_module *list_each(m, &data.module_enabled_queue, next))
-    list_probes(m);
+    if (! module_pattern || fnmatch(module_pattern, m->name, 0) == 0)
+      list_probes(m, probe_pattern);
 
   for (struct _xprobes_module *list_each(m, &data.module_disabled_list, next))
-    list_probes(m);
+    if (! module_pattern || fnmatch(module_pattern, m->name, 0) == 0)
+      list_probes(m, probe_pattern);
 
   return true;
 }
@@ -1371,10 +1425,10 @@ static struct command commands[] = {
   { .cmd = "disable MODULE", .run = command_disable },
   { .cmd = "unload MODULE", .run = command_unload },
   { .cmd = "command MODULE [ARGS]", .run = command_command },
-  { .cmd = "objects", .run = command_objects },
-  { .cmd = "sites", .run = command_sites },
-  { .cmd = "modules", .run = command_modules },
-  { .cmd = "probes", .run = command_probes },
+  { .cmd = "objects [PATTERN]", .run = command_objects },
+  { .cmd = "sites [OBJECT_PATTERN:SITE_PATTERN]", .run = command_sites },
+  { .cmd = "modules [PATTERN]", .run = command_modules },
+  { .cmd = "probes [MODULE_PATTERN:PROBE_PATTERN]", .run = command_probes },
 
   { .cmd = "cancel", .run = command_cancel, .hidden = true, .async = true },
   { .cmd = "help", .run = command_help, .hidden = true },
