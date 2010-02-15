@@ -90,6 +90,13 @@ __attribute__((__section__(".gnu.linkonce"),
 void
 _xprobes_object_init(void)
 {
+  /*
+    Placing function definition in .gnu.linkonce section merges
+    multiple definitions into one.  However .ctor and .dtor sections
+    are simply concatenated, and thus have multiple references to this
+    single function.  We use linked counter to perform construction
+    and destruction exactly once.
+  */
   if (++_xprobes_object.linked == 1)
     _xprobes_object_link(&_xprobes_object, _XPROBES_OBJECT_VERSION);
 }
