@@ -2,6 +2,21 @@ Explicit probes
 ===============
 
 
+0.2  2010-02-15
+
+       Listing commands (objects/sites/modules/probes) now take
+       optional filter pattern.  For instance
+
+         xprobes> sites *lib*:*func*
+
+       will list sites matching '*func*' from objects matching
+       '*lib*'.  Backslash escapes wildcard meaning, so
+
+         xprobes> probes :*\**
+
+       lists all probes that use '*' wildcard in their pattern.
+
+
 0.1  2010-02-13
 
        First release.  I will use consecutive version numbers starting
