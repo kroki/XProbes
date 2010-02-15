@@ -5,10 +5,10 @@ Explicit probes (XProbes for short) is a framework for static user
 space probes.  It consists of a shared library libxprobes and its
 header files, and xprobes control utility.  XProbes enables you to
 define static probe sites in the source code, and later attach probe
-modules to them.  Probes may be attached at application startup, and
-while the application is running.  xprobes control utility provides
-commands for dynamic loading/unloading of probe modules, listing
-available sites and probes, and selective enabling/disabling.
+modules to them.  Probes may be attached both at application startup,
+and while the application is running.  xprobes control utility
+provides commands for dynamic loading/unloading of probe modules,
+listing available sites and probes, and module enabling/disabling.
 
 Among XProbes features are:
 
@@ -21,10 +21,7 @@ Among XProbes features are:
      Probes can be written in the same language as the application
      itself (we mean C and C++ here).  This means that probe code can
      access type definitions of the application code, and thus access
-     structures, classes, and their methods, etc. in a natural way.
-
-     xprobes control utility has a nice context aware command
-     completion.
+     structures, classes, and even their methods, in a natural way.
 
  * doesn't require special privileges to run.
 
@@ -38,14 +35,13 @@ Among XProbes features are:
  * neglectable inactive probe site overhead.
 
      Inactive probe site is a single 'if (unlikely(site == active))'
-     statement, i.e., two memory loads, a comparison, and a single
-     well-predicted not-taken branch instruction.
+     statement, i.e., only few instructions.
 
- * tiny active probe site overhead.
+ * minimal active probe site overhead.
 
-     Active site probe execution is simply a call to a function in
-     another shared library.  No trap instruction (breakpoint) or
-     system call is used.
+     Active probe execution is simply a call to a function in another
+     shared library.  No trap instruction (breakpoint) or system call
+     is used.
 
  * type safe.
 
@@ -77,8 +73,8 @@ Among XProbes features are:
      threads.  Other threads are not blocked during this execution.
      There is one exception: when you execute a command with xprobes
      utility, and some other application thread concurrently calls
-     dlopen(), there's a tiny time window during which one of this
-     threads has to wait the other.
+     dlopen() on alibrary blessed with XProbes, there's a tiny time
+     window during which one of this threads has to wait the other.
 
  * several non-conflicting probe modules may be used simultaneously.
 
@@ -86,16 +82,17 @@ Among XProbes features are:
      attach to the same site.  This provides for better modularity:
      you can keep a repository of different probe modules for
      different aspects of the application, and/or distribute probe
-     modules with you library.
+     modules with your library.
 
  * portable (to some extent).
 
      XProbes requires GNU compiler (GCC) version 4.1 or higher, and
-     GNU assembler and linker to build, not only XProbes itself, but
-     also the applications that use it and any probe modules.  Some of
-     the attributes that it uses require ELF object file format.  On
-     the other hand, it doesn't require GNU C library, so it may be
-     used on any ELF system with installed GCC suite.
+     GNU assembler and linker (or compatible tools) to build, not only
+     XProbes itself, but also the applications that use it and any
+     probe modules.  Some of the attributes that it uses require ELF
+     object file format.  On the other hand, it doesn't require GNU C
+     library, so it may be used on any ELF system with installed GCC
+     suite.
 
 
 Use example
@@ -190,7 +187,8 @@ then you do
   $ LD_PRELOAD=/path/to/my_probe.so my_app
 
 Alternatively, suppose we are talking about a server application that
-you are not allowed to restart.  Then you use xprobes utility:
+is already running, and you are not allowed to restart it.  Then you
+use xprobes utility:
 
   bash$ xprobes $(pidof my_app)
   Connecting... done
@@ -229,7 +227,14 @@ cancel command in progress by pressing C-c.
 
 Loaded modules are automatically enabled.  An asterisk before the
 module name indicates that the module is enabled.  Let's see what
-sites have attached to it:
+probes it has:
+
+  xprobes> probes
+  /path/to/my_probe.so:
+    my_app_* (const char*,int,bool) -> my_probe
+  xprobes>
+
+Here it is.  Now let's see what sites is has attached to:
 
   xprobes> sites
   /path/to/my_app:
@@ -246,7 +251,7 @@ pattern, and my_probe function from /path/to/my_probe.so was attached to it
   xprobes>
 
 We called the command method of our probe module, and it output a
-message telling that the probe was hit with i > j 16 times thus far.
+message telling that the probe was hit with i > j 16 times so far.
 
   xprobes> disable /path/to/my_probe.so
   xprobes> unload /path/to/my_probe.so
