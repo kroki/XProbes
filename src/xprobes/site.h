@@ -88,6 +88,9 @@ __attribute__((__section__(".gnu.linkonce"),
                __visibility__("hidden"),
                __constructor__))
 void
+_xprobes_object_init(void);
+
+void
 _xprobes_object_init(void)
 {
   /*
@@ -105,6 +108,9 @@ _xprobes_object_init(void)
 __attribute__((__section__(".gnu.linkonce"),
                __visibility__("hidden"),
                __destructor__))
+void
+_xprobes_object_destroy(void);
+
 void
 _xprobes_object_destroy(void)
 {
