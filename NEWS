@@ -2,6 +2,11 @@ Explicit probes
 ===============
 
 
+0.3  2010-02-15
+
+       Give -Wmissing-prototypes what it wants.
+
+
 0.2  2010-02-15
 
        Listing commands (objects/sites/modules/probes) now take
