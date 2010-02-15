@@ -4,6 +4,14 @@
 include $(top_srcdir)/Makefile.common
 
 
+TESTS =						\
+	main.sh
+
+
+EXTRA_DIST =					\
+	main.sh
+
+
 check_PROGRAMS =				\
 	main
 

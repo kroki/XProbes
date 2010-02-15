@@ -14,7 +14,7 @@ To build the project, run
 
   ./configure
   make
-  make check  (it won't run anything, yet will check some build scenarios)
+  make check
 
 To install it, run
 

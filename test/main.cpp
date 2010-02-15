@@ -122,8 +122,11 @@ main(int argc, char *argv[])
 
       std::cout << libshared_f2() << std::endl << std::endl;
 
-      struct timespec remains = delay;
-      RESTART(nanosleep(&remains, &remains));
+      if (i < count - 1)
+        {
+          struct timespec remains = delay;
+          RESTART(nanosleep(&remains, &remains));
+        }
     }
 
   return 0;
