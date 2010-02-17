@@ -1641,7 +1641,7 @@ process_options(const char *options)
           {
             char *end;
             unsigned long res = strtoul(val, &end, 10);
-            if (*end != '\0' || res >= INT_MAX)
+            if (*end != '\0' || res < 1 || res >= INT_MAX)
               {
                 fprintf(stderr, "xprobes: invalid signal number '%s'\n", val);
                 abort();
@@ -1685,14 +1685,6 @@ register_signal_handler(void)
   if (options)
     process_options(options);
 
-  /*
-    XPROBES_OPTIONS='s=0' disables libxprobes in a sense that no
-    signal handler is registered and thus attaching with xprobes
-    control utility is not possible.
-  */
-  if (config.signal_no == 0)
-    return;
-
   sigemptyset(&config.signal_mask);
   sigaddset(&config.signal_mask, config.signal_no);
 
@@ -1716,9 +1708,6 @@ static __attribute__((__destructor__))
 void
 unregister_signal_handler(void)
 {
-  if (config.signal_no == 0)
-    return;
-
   static const struct sigaction action = { .sa_handler = SIG_DFL };
   sigaction(config.signal_no, &action, NULL);
 }
