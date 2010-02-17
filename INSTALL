@@ -10,9 +10,9 @@ If you checked out this project from git repository, then first run
 
 to initialize autotools framework.
 
-To build the project, run
+To build the project, create an empty directory, cd there, and run
 
-  ./configure
+  /path/to/xprobes-source/configure
   make
   make check
 
@@ -33,13 +33,14 @@ If you are doing 64-bit build, and your system keeps 64-bit libraries
 in /lib64, pass --libdir='${exec_prefix}/lib64' to ./configure above.
 You can build both library types with
 
-  ./configure --libdir='${exec_prefix}/lib64'
+  /path/to/xprobes-source/configure --libdir='${exec_prefix}/lib64'
   make
   make check
   make install
 
   make clean
-  ./configure --disable-control CC='gcc -m32' CXX='g++ -m32'
+  /path/to/xprobes-source/configure \
+                               --disable-control CC='gcc -m32' CXX='g++ -m32'
   make
   make check
   make install-exec

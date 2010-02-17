@@ -34,6 +34,10 @@ AC_PREFIX_DEFAULT([/usr/local])
 
 AC_CONFIG_SRCDIR([src/Makefile.am])
 
+AS_IF([test "`cd $srcdir; pwd`" = "`pwd`"],
+      [AC_MSG_ERROR([Building in the source directory is not supported.
+                  Create an empty directory, and run configure from there.])])
+
 AC_USE_SYSTEM_EXTENSIONS
 
 LT_INIT([disable-static])
