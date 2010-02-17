@@ -101,15 +101,12 @@ Use example
 Complete documentation is TBD.  Here's a short example (you can also
 play with the code in test/ directory, build it with 'make check').
 
-  NOTE: xprobes control utility uses Unix socket and a signal to
-  communicate with the application that links with libxprobes.
-  Default signal is SIGCONT.  It was chosen because most programs do
-  not handle it, and you won't mistakenly kill the process that wasn't
-  linked with libxprobes with it.  For programs that handle SIGCONT,
-  you have to use some other value.  Numbers closer to SIGRTMAX may be
-  a good choice.  For the application (i.e., libxprobes) you override
-  the signal number with XPROBES_OPTIONS='s=NUM' environment setting,
-  for xprobes utility use --signal=NUM option.
+  NOTE: xprobes control utility uses Unix socket and a real-time
+  signal to communicate with the application that links with
+  libxprobes.  Default signal is SIGRTMAX.  For the application
+  (i.e., libxprobes) you override the signal number with
+  XPROBES_OPTIONS='s=NUM' environment setting, for xprobes utility use
+  --signal=NUM option.
 
 To bless you application with XProbes, include <xprobes/site.h> and
 define probe sites with XPROBES_SITE(tag, proto, args) macro.

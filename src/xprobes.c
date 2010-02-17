@@ -88,11 +88,13 @@ process_options(int argc, char *argv[])
         case 's':
           {          
             char *end;
-            unsigned long res = strtoul(optarg, &end, 10);
-            if (*end != '\0' || res < 1 || res >= INT_MAX)
+            long res = strtol(optarg, &end, 10);
+            if (*end != '\0' || res < SIGRTMIN || res > SIGRTMAX)
               {
-                fprintf(stderr, "%s: invalid signal number '%s'\n",
-                        argv[0], optarg);
+                fprintf(stderr,
+                        "%s: invalid signal number '%s',"
+                        " should be between SIGRTMIN (%d) and SIGRTMAX (%d)\n",
+                        argv[0], optarg, SIGRTMIN, SIGRTMAX);
                 usage(stderr);
                 exit(2);
               }

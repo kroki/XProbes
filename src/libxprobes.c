@@ -1640,10 +1640,13 @@ process_options(const char *options)
         case 's':
           {
             char *end;
-            unsigned long res = strtoul(val, &end, 10);
-            if (*end != '\0' || res < 1 || res >= INT_MAX)
+            long res = strtol(val, &end, 10);
+            if (*end != '\0' || res < SIGRTMIN || res > SIGRTMAX)
               {
-                fprintf(stderr, "xprobes: invalid signal number '%s'\n", val);
+                fprintf(stderr,
+                        "xprobes: invalid signal number '%s',"
+                        " should be between SIGRTMIN (%d) and SIGRTMAX (%d)\n",
+                        val, SIGRTMIN, SIGRTMAX);
                 abort();
               }
             config.signal_no = res;

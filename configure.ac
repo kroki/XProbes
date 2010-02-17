@@ -101,7 +101,7 @@ AM_COND_IF([ENABLE_CONTROL],
 LIBS=$save_LIBS
 
 AC_DEFINE([PACKAGE_COPYRIGHT], ["xprobes_copyright"], [Copyright string.])
-AC_DEFINE([DEFAULT_SIGNAL], [SIGCONT], [Default signal.])
+AC_DEFINE([DEFAULT_SIGNAL], [SIGRTMAX], [Default signal.])
 AC_DEFINE([DEFAULT_UNLOAD_DELAY], [60], [Default unload delay (secs).])
 AC_DEFINE([ISALIVE_CHAR], ['\b'], [Is-alive char.])
 
