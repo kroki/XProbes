@@ -94,7 +94,7 @@ struct control
   int socket;
   pid_t my_pid;
 
-  char command_buf[1024];
+  struct control_buffer command;
   char *command_args;
 
   struct sigaction sigpipe_orig;
@@ -1003,8 +1003,6 @@ command_cancel(void)
   if (data.probe_noop != &_xprobes.action_pending)
     return true;                /* No action is pending. */
 
-  control_write("command canceled");
-
   action_type action = _xprobes.action;
   bool action_token_acquired =
     (action != _xprobes_noop
@@ -1022,16 +1020,18 @@ command_cancel(void)
     action will be a no-op, and will return shortly, but we have to
     wait for that.
   */
-  if (action_token_acquired)
-    {
-      return true;
-    }
-  else
-    {
-      control_write(", waiting...");
+  control_write("command canceled");
+  if (! action_token_acquired)
+    control_write(", waiting...");
 
-      return false;
-    }
+  /*
+    The call to control_done() is the end of the reply of cancel
+    command itself.  Additionally, we will either wait for the reply
+    of canceled command, or call control_done() ourselves once more.
+  */
+  control_done();
+
+  return action_token_acquired;
 }
 
 
@@ -1450,9 +1450,8 @@ command_help(void)
 
 static
 bool
-process_command(char *cmd)
+process_command(char *cmd, size_t len)
 {
-  size_t len = strlen(cmd);
   char *end = cmd;
   assert(! isspace(*end));
   while (*end && ! isspace(*end))
@@ -1576,41 +1575,23 @@ signal_handler(int sig, siginfo_t *info, void *ctx)
         goto done;
     }
 
-  char *pos = control.command_buf;
-  size_t room = sizeof(control.command_buf);
-  while (room > 0)
+  ssize_t len = _xprobes_control_read(control.socket, &control.command,
+                                      true, false);
+  if (len < 0)
     {
-      ssize_t len = RESTART(read(control.socket, pos, room));
-      if (len <= 0)
-        {
-          control_write("read() error");
-          RESTART(close(control.socket));
-          control.socket = -1;
-          control.pid = 0;
-
-          goto error;
-        }
-      pos += len;
-      if (pos[-1] == '\0')
-        break;
-
-      room -= len;
-    }
-  if (room == 0)
-    {
-      control_write("command too long");
+      if (len == -3)
+        control_write("command too long");
+      else
+        control_write("read() error");
       RESTART(close(control.socket));
       control.socket = -1;
       control.pid = 0;
+      control.command.used = 0;
 
       goto error;
     }
 
-  char *cmd = control.command_buf;
-  while (isspace(*cmd))
-    ++cmd;
-
-  if (! process_command(cmd))
+  if (! process_command(control.command.buf, len))
     goto error;
 
  done:

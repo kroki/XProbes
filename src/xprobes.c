@@ -43,7 +43,7 @@
 static int signal_no;
 static pid_t control_pid;
 static int control_socket;
-static char reply[1024];
+static struct control_buffer reply = { .end = NULL };
 static char *help = NULL;
 static char *version = NULL;
 static char *modules = NULL;
@@ -168,61 +168,29 @@ unlink_socket(void)
 
 
 static
-bool
-read_reply(bool full)
+size_t
+read_reply(bool read_full)
 {
-  char *pos = reply;
-  size_t room = sizeof(reply) - 1;
-  do
+  ssize_t len = _xprobes_control_read(control_socket, &reply, read_full, true);
+  if (len >= 0)
+    return len;
+
+  switch (len)
     {
-      ssize_t len;
+    case -1:
+      printf("failed to read from remote\n");
+      break;
 
-    retry:
-      len = RESTART(read(control_socket, pos, room));
-      if (len <= 0)
-        {
-          if (len < 0)
-            perror("read()");
-          else
-            printf("failed to read from remote\n");
-          exit(1);
-        }
+    case -2:
+      perror("read()");
+      break;
 
-      char *isalive = pos;
-      size_t rest = len;
-      while ((isalive = memchr(isalive, ISALIVE_CHAR, rest)))
-        {
-          rest -= isalive - pos + 1;
-          memmove(isalive, isalive + 1, rest);
-          --len;
-        }
-      if (len == 0)
-        goto retry;
-
-      pos += len;
-      if (pos[-1] == '\0')
-        break;
-
-      room -= len;
-    }
-  while (full && room > 0);
-
-  if (full && room == 0 && pos[-1] != '\0')
-    {
+    case -3:
       printf("too long reply from remote\n");
-      exit(1);
+      break;
     }
 
-  if (pos[-1] == '\0')
-    {
-      return true;
-    }
-  else
-    {
-      *pos = '\0';
-
-      return false;
-    }
+  exit(1);
 }
 
 
@@ -401,20 +369,19 @@ complete_command(const char *text, int start, int end)
       control_notify();
 
       size_t size = 1;
-      bool done = false;
-      while (! done)
+      do
         {
-          done = read_reply(false);
-          size_t len = strlen(reply);
+          size_t len = read_reply(false);
           modules = realloc(modules, size + len);
           if (! modules)
             {
               printf("realloc() failed\n");
               exit(1);
             }
-          memcpy(modules + size - 1, reply, len);
+          memcpy(modules + size - 1, reply.buf, len);
           size += len;
         }
+      while (! reply.end);
       modules[size - 1] = '\0';
     }
 
@@ -426,6 +393,11 @@ static
 void
 init_command_completion(void)
 {
+  static const char local_commands[] =
+    "help\n"
+    "version\n"
+    "quit\n";
+
   int res = _xprobes_control_write(control_socket, "help", sizeof("help"));
   if (res <= 0)
     {
@@ -435,16 +407,10 @@ init_command_completion(void)
 
   control_notify();
 
-  read_reply(true);
+  size_t len = read_reply(true);
 
-  static const char local_commands[] =
-    "help\n"
-    "version\n"
-    "quit\n";
-
-  size_t len = strlen(reply);
   help = malloc(len + sizeof(local_commands));
-  memcpy(help, reply, len);
+  memcpy(help, reply.buf, len);
   memcpy(help + len, local_commands, sizeof(local_commands));
 
   res = _xprobes_control_write(control_socket, "version", sizeof("version"));
@@ -456,9 +422,9 @@ init_command_completion(void)
 
   control_notify();
 
-  read_reply(true);
+  len = read_reply(true);
 
-  version = strdup(reply);
+  version = strndup(reply.buf, len);
 
   rl_attempted_completion_function = complete_command;
 }
@@ -501,10 +467,10 @@ attach(void)
 
   RESTART(close(fd));
 
-  read_reply(true);
-  if (reply[0])
+  size_t len = read_reply(true);
+  if (len > 0)
     {
-      fputs(reply, stdout);
+      fputs(reply.buf, stdout);
       exit(1);
     }
 
@@ -512,6 +478,9 @@ attach(void)
 
   printf("done\n");
 }
+
+
+static sig_atomic_t canceled = 0;
 
 
 static
@@ -528,6 +497,8 @@ handle_sigint(int sig)
 
   res = sigaction(SIGINT, &ignore, NULL);
   assert(res == 0);
+
+  canceled = 1;
 
   errno = save_errno;
 }
@@ -610,15 +581,26 @@ loop(void)
       res = sigaction(SIGINT, &sigint, NULL);
       assert(res == 0);
 
-      bool done = false;
-      while (! done)
+      do
         {
-          done = read_reply(false);
-          fputs(reply, stdout);
+          read_reply(false);
+          fputs(reply.buf, stdout);
         }
+      while (! reply.end);
 
       res = sigaction(SIGINT, &ignore, NULL);
       assert(res == 0);
+
+      if (canceled)
+        {
+          canceled = 0;
+          do
+            {
+              read_reply(false);
+              fputs(reply.buf, stdout);
+            }
+          while (! reply.end);
+        }
     }
 }
 

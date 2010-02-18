@@ -148,6 +148,90 @@ _xprobes_control_write(int fd, const char *str, size_t len)
 }
 
 
+/*
+  _xprobes_control_read() reads zero-terminated packet from fd.  Data
+  is returned in buffer->buf.
+
+  When read_full is true, whole packet is read, and its length (not
+  including terminating zero) is returned.  Any additional data from
+  the next packet is left in the buffer, and is returned on the next
+  call.
+
+  When read_full is false, partial data read so far is placed in
+  buffer->buf.  All chunks are zero-terminated, and chunk length (not
+  including terminating zero) is returned.  If buffer->end != NULL
+  then returned chunk is the last one in the packet.
+
+  When filter_isalive is true, ISALIVE_CHAR is filtered from the input
+  stream.
+
+  On error _xprobes_control_read() returns:
+
+    -1 if read() system call returned 0.
+    -2 if read() system call returned -1.
+    -3 if read_full is requested and buffer is too small.
+*/
+ssize_t
+_xprobes_control_read(int fd, struct control_buffer *buffer,
+                      bool read_full, bool filter_isalive)
+{
+  if (buffer->end)
+    {
+      buffer->used -= buffer->end + 1 - buffer->buf;
+      memmove(buffer->buf, buffer->end + 1, buffer->used);
+      buffer->end = memchr(buffer->buf, '\0', buffer->used);
+
+      if (! read_full && buffer->used > 0)
+        return (buffer->end
+                ? buffer->end - buffer->buf
+                : (ssize_t) buffer->used);
+    }
+  else
+    {
+      buffer->used = 0;
+    }
+
+  while (! buffer->end && buffer->used < CONTROL_BUFFER_SIZE - 1)
+    {
+      ssize_t res;
+
+    retry:
+      res = RESTART(read(fd, buffer->buf + buffer->used,
+                         CONTROL_BUFFER_SIZE - 1 - buffer->used));
+      if (res <= 0)
+        return res - 1;
+
+      if (filter_isalive)
+        {
+          char *pos = buffer->buf + buffer->used;
+          char *isalive = pos;
+          size_t rest = res;
+          while ((isalive = memchr(isalive, ISALIVE_CHAR, rest)))
+            {
+              rest -= isalive + 1 - pos;
+              memmove(isalive, isalive + 1, rest);
+              --res;
+            }
+          if (res == 0)
+            goto retry;
+        }
+
+      buffer->end = memchr(buffer->buf + buffer->used, '\0', res);
+      buffer->used += res;
+      buffer->buf[buffer->used] = '\0';
+
+      if (! read_full)
+        return (buffer->end
+                ? buffer->end - buffer->buf
+                : (ssize_t) buffer->used);
+    }
+  if (! buffer->end)
+    return -3;
+
+  return (buffer->end - buffer->buf);
+}
+
+
 void
 _xprobes_unlink_socket(uid_t uid, pid_t pid)
 {

@@ -29,6 +29,17 @@
 #include <unistd.h>
 
 
+#define CONTROL_BUFFER_SIZE  1024
+
+
+struct control_buffer
+{
+  char buf[CONTROL_BUFFER_SIZE];
+  size_t used;
+  char *end;
+};
+
+
 /*
   visibility("hidden") below are only to prevent namespace pollution,
   they have no runtime effects.
@@ -39,6 +50,10 @@ int _xprobes_open_socket(uid_t uid, pid_t pid, bool own);
 
 __attribute__((__visibility__("hidden")))
 int _xprobes_control_write(int fd, const char *str, size_t len);
+
+__attribute__((__visibility__("hidden")))
+ssize_t _xprobes_control_read(int fd, struct control_buffer *buffer,
+                              bool read_full, bool filter_isalive);
 
 __attribute__((__visibility__("hidden")))
 void _xprobes_unlink_socket(uid_t uid, pid_t pid);
