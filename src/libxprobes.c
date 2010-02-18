@@ -965,15 +965,12 @@ action_module_command(/* any */)
 
   reset_action_pending();
 
-  size_t len = strlen(control.command_args);
   char *end = control.command_args;
   assert(! isspace(*end));
   while (*end && ! isspace(*end))
-    {
-      ++end;
-      --len;
-    }
-  *end = '\0';
+    ++end;
+  if (*end)
+    *end++ = '\0';
 
   struct _xprobes_module *module =
     find_module(&data.module_enabled_queue, control.command_args);
@@ -982,8 +979,6 @@ action_module_command(/* any */)
   assert(module);
   assert(module->command);
 
-  if (len > 0)
-    ++end;
   while (isspace(*end))
     ++end;
 
