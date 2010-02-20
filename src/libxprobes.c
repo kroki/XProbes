@@ -259,7 +259,7 @@ lock_action(void)
 {
   /*
     To prevent recursive call to lock_control() from singal handler,
-    we have to block the signal int this thread first.
+    we have to block the signal in this thread first.
   */
   int res = pthread_sigmask(SIG_BLOCK, &config.signal_mask, NULL);
   assert(res == 0);
