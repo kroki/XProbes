@@ -480,7 +480,7 @@ attach(void)
 }
 
 
-static sig_atomic_t canceled = 0;
+static volatile sig_atomic_t canceled = 0;
 
 
 static
