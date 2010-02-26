@@ -23,7 +23,7 @@
 const char *
 f(void)
 {
-  XPROBES_SITE(xprobes_test_f,
+  XPROBES_SITE(xprobes_test, f,
                (const char *),
                (__func__));
 

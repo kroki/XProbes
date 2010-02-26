@@ -109,7 +109,7 @@ play with the code in test/ directory, build it with 'make check').
   --signal=NUM option.
 
 To bless you application with XProbes, include <xprobes/site.h> and
-define probe sites with XPROBES_SITE(tag, proto, args) macro.
+define probe sites with XPROBES_SITE(provider, name, proto, args) macro.
 
   #include <xprobes/site.h>
 
@@ -117,7 +117,7 @@ define probe sites with XPROBES_SITE(tag, proto, args) macro.
   my_func(int i, int j, char *s)
   {
     ...
-    XPROBES_SITE(my_app_my_func,
+    XPROBES_SITE(my_app, my_func,
                  (const char *, int, bool),
                  (s, 3, i > j));
     ...

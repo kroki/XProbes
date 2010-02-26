@@ -71,7 +71,7 @@ main(int argc, char *argv[])
   const char *(*module_f)(void) = NULL;
   for (int i = 0; i < count; ++i)
     {
-      XPROBES_SITE(xprobes_test_main,
+      XPROBES_SITE(xprobes_test, main,
                    (const char *),
                    (__func__));
 

@@ -25,7 +25,7 @@ module_f(void)
 {
   static int count = 0;
 
-  XPROBES_SITE(xprobes_test_module,
+  XPROBES_SITE(xprobes_test, module,
                (const char *, int),
                (__func__, count));
 

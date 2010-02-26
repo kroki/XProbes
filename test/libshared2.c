@@ -23,7 +23,7 @@
 const char *
 libshared_f2(void)
 {
-  XPROBES_SITE(xprobes_test_libshared_f2,
+  XPROBES_SITE(xprobes_test, libshared_f2,
                (const char *),
                (__func__));
 

@@ -29,17 +29,17 @@ extern "C" {
 #include "bits/object.h"
 
 
-#define XPROBES_SITE(name, proto, args)                                 \
+#define XPROBES_SITE(provider, name, proto, args)                       \
   do                                                                    \
     {                                                                   \
-      extern void _xprobes_typecheck_##name proto;                      \
+      extern void _xprobes_typecheck_##provider##_##name proto;         \
                                                                         \
       static char _xprobes_proto[] = #proto;                            \
       static                                                            \
         __attribute__((__section__("_xprobes_site"),                    \
                        __aligned__(__alignof__(struct _xprobes_site)))) \
         struct _xprobes_site _xprobes_site = {                          \
-          /* .tag = */ #name,                                           \
+          /* .tag = */ #provider "_" #name,                             \
           /* .proto = */ _xprobes_proto,                                \
           /* .probe = */ &_xprobes.noop,                                \
         };                                                              \
