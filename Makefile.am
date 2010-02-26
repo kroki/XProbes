@@ -14,4 +14,5 @@ SUBDIRS =					\
 
 EXTRA_DIST =					\
 	version.sh				\
-	extra/XProbes.m4
+	extra/XProbes.m4			\
+	extra/xprobes.h
