@@ -155,7 +155,7 @@ enum {
 
 static inline
 void
-ignore_sigpipe(void)
+suppress_sigpipe(void)
 {
 #if ! defined(MSG_NOSIGNAL) && ! defined(SO_NOSIGPIPE)
   /*
@@ -206,7 +206,7 @@ restore_sigpipe(void)
             other thread before we had a chance to wait for it.
           */
           static const struct timespec nowait = { 0, 0 };
-          sigtimedwait(&config.sigpipe_mask, NULL, &nowait);
+          RESTART(sigtimedwait(&config.sigpipe_mask, NULL, &nowait));
         }
 
       if (control.sigpipe_unblock)
@@ -246,7 +246,7 @@ lock_control(void)
   res = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &control.cancellation);
   assert(res == 0);
 
-  ignore_sigpipe();
+  suppress_sigpipe();
 
   lock_data();
 
