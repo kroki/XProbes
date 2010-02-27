@@ -80,6 +80,7 @@ struct config
 {
   int signal_no;
   sigset_t signal_mask;
+  sigset_t sigpipe_mask;
   int safe_unload_delay;
 };
 
@@ -97,7 +98,9 @@ struct control
   struct control_buffer command;
   char *command_args;
 
-  struct sigaction sigpipe_orig;
+  bool sigpipe_pending;
+  bool sigpipe_unblock;
+
   bool need_newline;
 
   int save_errno;
@@ -155,26 +158,26 @@ void
 ignore_sigpipe(void)
 {
 #if ! defined(MSG_NOSIGNAL) && ! defined(SO_NOSIGPIPE)
-  static const struct sigaction ignore = { .sa_handler = SIG_IGN };
-
   /*
-    We want to ignore possible SIGPIPE that we may generate on write.
-    We assume that it is delivered *synchronously* and *only* to the
-    thread doing the write.  So if it is reported as already pending
-    (which means the thread blocks it), then we do not reset the
-    action: if we generate SIGPIPE, it will be merged with the pending
-    one (there's no queuing), and that suits us well.
+    We want to ignore possible SIGPIPE that we can generate on write.
+    SIGPIPE is delivered *synchronously* and *only* to the thread
+    doing the write.  So if it is reported as already pending (which
+    means the thread blocks it), then we do nothing: if we generate
+    SIGPIPE, it will be merged with the pending one (there's no
+    queuing), and that suits us well.  If it is not pending, we block
+    it in this thread (and we avoid changing signal action, because it
+    is per-process).
   */
   sigset_t pending;
   sigpending(&pending);
-  if (! sigismember(&pending, SIGPIPE))
+  control.sigpipe_pending = sigismember(&pending, SIGPIPE);
+  if (! control.sigpipe_pending)
     {
-      int res = sigaction(SIGPIPE, &ignore, &control.sigpipe_orig);
-      assert(res == 0);
-    }
-  else
-    {
-      control.sigpipe_orig.sa_handler = SIG_IGN;
+      sigset_t blocked;
+      pthread_sigmask(SIG_BLOCK, &config.sigpipe_mask, &blocked);
+
+      /* Maybe is was blocked already?  */
+      control.sigpipe_unblock = ! sigismember(&blocked, SIGPIPE);
     }
 #endif  /* ! defined(MSG_NOSIGNAL) && ! defined(SO_NOSIGPIPE) */
 }
@@ -185,10 +188,29 @@ void
 restore_sigpipe(void)
 {
 #if ! defined(MSG_NOSIGNAL) && ! defined(SO_NOSIGPIPE)
-  if (control.sigpipe_orig.sa_handler != SIG_IGN)
+  /*
+    If SIGPIPE was pending already we do nothing.  Otherwise, if it
+    become pending (i.e., we generated it), then we sigwait() it (thus
+    clearing pending status).  Then we unblock SIGPIPE, but only if it
+    were us who blocked it.
+  */
+  if (! control.sigpipe_pending)
     {
-      int res = sigaction(SIGPIPE, &control.sigpipe_orig, NULL);
-      assert(res == 0);
+      sigset_t pending;
+      sigpending(&pending);
+      if (sigismember(&pending, SIGPIPE))
+        {
+          /*
+            Protect ourselves from a situation when SIGPIPE was sent
+            by the user to the whole process, and was delivered to
+            other thread before we had a chance to wait for it.
+          */
+          static const struct timespec nowait = { 0, 0 };
+          sigtimedwait(&config.sigpipe_mask, NULL, &nowait);
+        }
+
+      if (control.sigpipe_unblock)
+        pthread_sigmask(SIG_UNBLOCK, &config.sigpipe_mask, NULL);
     }
 #endif  /* ! defined(MSG_NOSIGNAL) && ! defined(SO_NOSIGPIPE) */
 }
@@ -1664,6 +1686,9 @@ register_signal_handler(void)
 
   sigemptyset(&config.signal_mask);
   sigaddset(&config.signal_mask, config.signal_no);
+
+  sigemptyset(&config.sigpipe_mask);
+  sigaddset(&config.sigpipe_mask, SIGPIPE);
 
   sigset_t empty;
   sigemptyset(&empty);
