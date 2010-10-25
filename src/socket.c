@@ -162,9 +162,6 @@ _xprobes_control_write(int fd, const char *str, size_t len)
   including terminating zero) is returned.  If buffer->end != NULL
   then returned chunk is the last one in the packet.
 
-  When filter_isalive is true, ISALIVE_CHAR is filtered from the input
-  stream.
-
   On error _xprobes_control_read() returns:
 
     -1 if read() system call returned 0.
@@ -172,8 +169,7 @@ _xprobes_control_write(int fd, const char *str, size_t len)
     -3 if read_full is requested and buffer is too small.
 */
 ssize_t
-_xprobes_control_read(int fd, struct control_buffer *buffer,
-                      bool read_full, bool filter_isalive)
+_xprobes_control_read(int fd, struct control_buffer *buffer, bool read_full)
 {
   if (buffer->end)
     {
@@ -195,26 +191,10 @@ _xprobes_control_read(int fd, struct control_buffer *buffer,
     {
       ssize_t res;
 
-    retry:
       res = RESTART(read(fd, buffer->buf + buffer->used,
                          CONTROL_BUFFER_SIZE - 1 - buffer->used));
       if (res <= 0)
         return res - 1;
-
-      if (filter_isalive)
-        {
-          char *pos = buffer->buf + buffer->used;
-          char *isalive = pos;
-          size_t rest = res;
-          while ((isalive = memchr(isalive, ISALIVE_CHAR, rest)))
-            {
-              rest -= isalive + 1 - pos;
-              memmove(isalive, isalive + 1, rest);
-              --res;
-            }
-          if (res == 0)
-            goto retry;
-        }
 
       buffer->end = memchr(buffer->buf + buffer->used, '\0', res);
       buffer->used += res;

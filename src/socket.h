@@ -53,7 +53,7 @@ int _xprobes_control_write(int fd, const char *str, size_t len);
 
 __attribute__((__visibility__("hidden")))
 ssize_t _xprobes_control_read(int fd, struct control_buffer *buffer,
-                              bool read_full, bool filter_isalive);
+                              bool read_full);
 
 __attribute__((__visibility__("hidden")))
 void _xprobes_unlink_socket(uid_t uid, pid_t pid);

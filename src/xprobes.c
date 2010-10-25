@@ -171,7 +171,7 @@ static
 size_t
 read_reply(bool read_full)
 {
-  ssize_t len = _xprobes_control_read(control_socket, &reply, read_full, true);
+  ssize_t len = _xprobes_control_read(control_socket, &reply, read_full);
   if (len >= 0)
     return len;
 

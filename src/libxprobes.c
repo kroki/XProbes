@@ -1508,18 +1508,16 @@ process_command(char *cmd, size_t len)
 }
 
 
-static
+static inline
 bool
 control_is_alive(void)
 {
-  /*
-    We can't use kill(control.pid, 0), because we may lack the
-    permissions to send the signals to control process.
-  */
-  static const char isalive[] = { ISALIVE_CHAR, '\0' };
-  int res = control_write(isalive);
+  int res = kill(control.pid, 0);
 
-  return (res == 1);
+  /*
+    EPERM also means the process exists, but we can't send signals to it.
+  */
+  return (res == 0 || errno == EPERM);
 }
 
 
@@ -1595,8 +1593,7 @@ signal_handler(int sig, siginfo_t *info, void *ctx)
         goto done;
     }
 
-  ssize_t len = _xprobes_control_read(control.socket, &control.command,
-                                      true, false);
+  ssize_t len = _xprobes_control_read(control.socket, &control.command, true);
   if (len < 0)
     {
       if (len == -3)
