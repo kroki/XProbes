@@ -169,11 +169,13 @@ suppress_sigpipe(void)
     is per-process).
   */
   sigset_t pending;
+  sigemptyset(&pending);
   sigpending(&pending);
   control.sigpipe_pending = sigismember(&pending, SIGPIPE);
   if (! control.sigpipe_pending)
     {
       sigset_t blocked;
+      sigemptyset(&blocked);
       pthread_sigmask(SIG_BLOCK, &config.sigpipe_mask, &blocked);
 
       /* Maybe is was blocked already?  */
@@ -197,6 +199,7 @@ restore_sigpipe(void)
   if (! control.sigpipe_pending)
     {
       sigset_t pending;
+      sigemptyset(&pending);
       sigpending(&pending);
       if (sigismember(&pending, SIGPIPE))
         {
