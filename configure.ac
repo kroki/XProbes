@@ -40,15 +40,16 @@ AS_IF([test "`cd $srcdir; pwd`" = "`pwd`"],
 
 AC_USE_SYSTEM_EXTENSIONS
 
-LT_INIT([disable-static])
-AS_IF([test "x$enable_static" = "xyes"],
-      AC_MSG_ERROR([libxprobes can't be build static]))
-
 AC_PROG_MAKE_SET
 AC_PROG_CC
 AC_PROG_CC_C99
 CC="$CC -pthread"
 AC_PROG_CXX
+AM_PROG_AR
+
+LT_INIT([disable-static])
+AS_IF([test "x$enable_static" = "xyes"],
+      AC_MSG_ERROR([libxprobes can't be build static]))
 
 AC_ARG_ENABLE([dlerror],
   [AS_HELP_STRING([--enable-dlerror],
