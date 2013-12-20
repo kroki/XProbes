@@ -13,6 +13,7 @@ SUBDIRS =					\
 
 
 EXTRA_DIST =					\
+	README.md				\
 	version.sh				\
 	extra/XProbes.m4			\
 	extra/xprobes.h
